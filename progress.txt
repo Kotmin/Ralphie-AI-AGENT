@@ -1,0 +1,2 @@
+# Ralph Progress Log (append-only)
+# Keep it short. High-signal only.
