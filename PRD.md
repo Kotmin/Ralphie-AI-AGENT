@@ -1,0 +1,13 @@
+# PRD: <Project Name>
+
+## User Stories
+
+### [ ] US-001: <Title>
+**Description:** ...
+**Acceptance Criteria:**
+- [ ] ...
+
+### [ ] US-002: <Title>
+**Description:** ...
+**Acceptance Criteria:**
+- [ ] ...
