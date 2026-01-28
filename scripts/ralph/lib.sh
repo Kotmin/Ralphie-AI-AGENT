@@ -136,7 +136,7 @@ prd_task_is_done() {
 }
 
 build_prompt() {
-  local out="" root="" workdir="" task="" prd="" progress="" state=""
+  local out="" root="" workdir="" task="" prd="" progress="" state="" questions="" answers=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
@@ -146,6 +146,8 @@ build_prompt() {
       --prd) prd="$2"; shift 2 ;;
       --progress) progress="$2"; shift 2 ;;
       --state) state="$2"; shift 2 ;;
+      --questions) questions="$2"; shift 2 ;;
+      --answers) answers="$2"; shift 2 ;;
       *) echo "build_prompt: unknown arg $1" >&2; exit 2 ;;
     esac
   done
@@ -161,14 +163,28 @@ build_prompt() {
     overlay+="$(cat "$user_base")"
   fi
 
+  # Keep prompts small: include tails only.
+  local QUESTIONS_TAIL=""
+  local ANSWERS_TAIL=""
+
+  if [[ -n "$questions" && -f "$questions" ]]; then
+    QUESTIONS_TAIL="$(tail -n 120 "$questions" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$answers" && -f "$answers" ]]; then
+    ANSWERS_TAIL="$(tail -n 200 "$answers" 2>/dev/null || true)"
+  fi
+
   cat >"$out" <<EOF
 You are running in a Ralph loop.
 IMPORTANT:
 - Treat PRD.md checkboxes as the source of truth for DONE.
 - Update PRD.md by checking the checkbox [x] when the task is fully done.
 - Append brief notes to progress.txt (keep it short, high-signal).
-- Keep state.json valid JSON. If you need clarification, set:
+- Keep state.json valid JSON.
+- If you need clarification, set:
   { "status": "NEEDS_CLARIFICATION", "questions": ["..."] }
+  and write the same questions to questions.md. Then stop.
 
 Current task: $task
 Repo root: $root
@@ -184,10 +200,31 @@ $(tail -n 80 "$progress" 2>/dev/null || true)
 
 # state.json
 $(cat "$state")
-
-$overlay
 EOF
+
+  # Add questions/answers only if present (avoid empty noise).
+  if [[ -n "$QUESTIONS_TAIL" ]]; then
+    cat >>"$out" <<EOF
+
+# questions.md (tail)
+$QUESTIONS_TAIL
+EOF
+  fi
+
+  if [[ -n "$ANSWERS_TAIL" ]]; then
+    cat >>"$out" <<EOF
+
+# answers.md (tail)
+$ANSWERS_TAIL
+EOF
+  fi
+
+  # Append overlay last.
+  if [[ -n "$overlay" ]]; then
+    printf "\n%s\n" "$overlay" >>"$out"
+  fi
 }
+
 
 maybe_notify() {
   # Optional ntfy.sh; enable by setting:

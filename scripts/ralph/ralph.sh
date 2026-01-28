@@ -101,14 +101,17 @@ for ((i=1; i<=ITERATIONS; i++)); do
   PROMPT_FILE="$(mktemp)"
   trap 'rm -f "$PROMPT_FILE"' EXIT
 
-  build_prompt \
+    build_prompt \
     --out "$PROMPT_FILE" \
     --root "$ROOT_DIR" \
     --workdir "$WORKDIR" \
     --task "$TASK_ID" \
     --prd "$PRD_MD" \
     --progress "$PROGRESS_TXT" \
-    --state "$STATE_JSON"
+    --state "$STATE_JSON" \
+    --questions "$ROOT_DIR/questions.md" \
+    --answers "$ROOT_DIR/answers.md"
+
 
   log "Running Claude headless (fresh session) iteration=$i ..."
   set +e
