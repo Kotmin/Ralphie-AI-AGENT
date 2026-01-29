@@ -1,2 +1,6 @@
 # Answers
-(You answer Ralph’s questions here. Keep answers numbered to match.)
+
+Protocol:
+- Answer questions by number
+- Short, direct answers preferred
+- Ralph will resume automatically on next run

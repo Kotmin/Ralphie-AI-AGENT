@@ -1,2 +1,6 @@
 # Questions for User
-(Claude/Ralph writes questions here when clarification is needed.)
+
+Protocol:
+- Ralph writes numbered questions here
+- Do NOT delete old questions
+- Add answers in answers.md using the same numbering
