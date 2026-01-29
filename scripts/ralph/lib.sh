@@ -259,3 +259,92 @@ maybe_notify() {
     --data-binary "$msg" \
     "$url/$topic" >/dev/null || true
 }
+
+
+claude_preflight() {
+  local workdir="$1"
+  local -a cmd=()
+  case "${RALPH_CLAUDE_KIND:-}" in
+    claude) cmd=(claude) ;;
+    npx) cmd=(npx -y @anthropic-ai/claude-code) ;;
+    *) return 1 ;;
+  esac
+
+  # Tiny prompt to validate auth/quota quickly.
+  # If this hangs, something is wrong (auth prompt, network, etc.)
+  (cd "$workdir" && "${cmd[@]}" -p "Reply with: OK") >/dev/null 2>&1
+}
+
+sync_tracking_to_worktree() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst"
+  rsync -a --delete "$src/" "$dst/"
+}
+
+sync_tracking_from_worktree() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst"
+  rsync -a --delete "$src/" "$dst/"
+}
+
+log_contains_quota_limit() {
+  local logf="$1"
+  grep -Eqi 'hit your limit|rate limit|quota|resets [0-9]{1,2}(am|pm)' "$logf"
+}
+
+log_contains_permission_denied() {
+  local logf="$1"
+  grep -Eqi 'permission denied|not permitted|operation not permitted' "$logf"
+}
+
+run_with_timeout_and_observability() {
+  local workdir="" prompt_file="" log_file="" timeout_sec=900 heartbeat_sec=15 verbose=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --workdir) workdir="$2"; shift 2 ;;
+      --prompt-file) prompt_file="$2"; shift 2 ;;
+      --log-file) log_file="$2"; shift 2 ;;
+      --timeout-sec) timeout_sec="$2"; shift 2 ;;
+      --heartbeat-sec) heartbeat_sec="$2"; shift 2 ;;
+      --verbose) verbose="$2"; shift 2 ;;
+      *) echo "run_with_timeout_and_observability: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+
+  run_claude_headless_logged "$workdir" "$prompt_file" "$log_file" &
+  local pid=$!
+
+  local tail_pid=""
+  if [[ "$verbose" -eq 1 ]]; then
+    ( tail -n 50 -f "$log_file" ) &
+    tail_pid=$!
+  fi
+
+  ( while kill -0 "$pid" 2>/dev/null; do
+      log "Claude still running (pid=$pid) ... $(now_iso) log=$log_file"
+      sleep "$heartbeat_sec"
+    done
+  ) &
+  local hb_pid=$!
+
+  ( sleep "$timeout_sec"
+    if kill -0 "$pid" 2>/dev/null; then
+      log "Timeout (${timeout_sec}s) hit. Killing Claude pid=$pid"
+      kill "$pid" 2>/dev/null || true
+      sleep 2
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  ) &
+  local wd_pid=$!
+
+  wait "$pid"
+  local rc=$?
+
+  kill "$hb_pid" 2>/dev/null || true
+  kill "$wd_pid" 2>/dev/null || true
+  if [[ -n "$tail_pid" ]]; then
+    kill "$tail_pid" 2>/dev/null || true
+  fi
+
+  return "$rc"
+}
