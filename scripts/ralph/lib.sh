@@ -40,14 +40,13 @@ state_get() {
 import json, sys
 p, expr = sys.argv[1], sys.argv[2]
 data = json.load(open(p, "r", encoding="utf-8"))
-# very small "jq-like" getter for known keys
-# expr format: .key
 key = expr.strip().lstrip(".")
 val = data.get(key, "")
 if isinstance(val, str):
     print(val)
 else:
-    import json as _j; print(_j.dumps(val))
+    import json as _j
+    print(_j.dumps(val))
 PY
 }
 
@@ -58,7 +57,6 @@ import json, sys
 p, keyexpr, value = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.load(open(p, "r", encoding="utf-8"))
 key = keyexpr.strip().lstrip(".")
-# value is passed already JSON-ish for strings in caller; attempt parse
 try:
     v = json.loads(value)
 except json.JSONDecodeError:
@@ -74,27 +72,52 @@ append_progress() {
   printf '%s\n' "$line" >> "$file"
 }
 
+# Sets:
+#   RALPH_CLAUDE_KIND = "claude" | "npx"
+#   RALPH_CLAUDE_CMD_ARR = array of executable + args
 detect_claude_cmd() {
   if command -v claude >/dev/null 2>&1; then
-    export RALPH_CLAUDE_CMD="claude"
+    export RALPH_CLAUDE_KIND="claude"
+    # shellcheck disable=SC2034
+    RALPH_CLAUDE_CMD_ARR=(claude)
+    export RALPH_CLAUDE_CMD_ARR
     return 0
   fi
+
   if command -v npx >/dev/null 2>&1; then
-    export RALPH_CLAUDE_CMD="npx -y @anthropic-ai/claude-code"
+    export RALPH_CLAUDE_KIND="npx"
+    # shellcheck disable=SC2034
+    RALPH_CLAUDE_CMD_ARR=(npx -y @anthropic-ai/claude-code)
+    export RALPH_CLAUDE_CMD_ARR
     return 0
   fi
+
   echo "Neither 'claude' nor 'npx' found. Install Claude Code or Node+NPX." >&2
   exit 127
 }
 
 run_claude_headless() {
   local workdir="$1" prompt_file="$2"
-  # Headless mode is documented as -p/--print. :contentReference[oaicite:3]{index=3}
+
+  # Read prompt (multi-line safe)
   local prompt
   prompt="$(cat "$prompt_file")"
 
-  (cd "$workdir" && bash -lc "$RALPH_CLAUDE_CMD -p \"\$PROMPT\"") \
-    PROMPT="$prompt"
+  # Build command array from env-exported bash array-like string is not reliable across shells,
+  # so we reconstruct based on kind.
+  local -a cmd=()
+  case "${RALPH_CLAUDE_KIND:-}" in
+    claude) cmd=(claude) ;;
+    npx) cmd=(npx -y @anthropic-ai/claude-code) ;;
+    *)
+      echo "RALPH_CLAUDE_KIND not set. Call detect_claude_cmd first." >&2
+      exit 127
+      ;;
+  esac
+
+  # Headless prompt mode: -p/--print (Claude Code)
+  # We pass the prompt as a single argument (newlines preserved by bash variable).
+  (cd "$workdir" && "${cmd[@]}" -p "$prompt")
 }
 
 prepare_worktree() {
@@ -123,7 +146,6 @@ prepare_worktree() {
 #   ### [x] US-002: Title
 prd_pick_next_task() {
   local prd="$1"
-  # first unchecked
   local line
   line="$(grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+US-[0-9]+' "$prd" | head -n1 || true)"
   [[ -n "$line" ]] || return 0
@@ -154,7 +176,7 @@ build_prompt() {
 
   local skill_prompt="$root/scripts/ralph/prompt.md"
 
-  # Optional user-level overlays (kept minimal here; we’ll improve detection later)
+  # Optional user-level overlays
   local user_base="$HOME/.claude/CLAUDE.md"
   local overlay=""
 
@@ -202,7 +224,6 @@ $(tail -n 80 "$progress" 2>/dev/null || true)
 $(cat "$state")
 EOF
 
-  # Add questions/answers only if present (avoid empty noise).
   if [[ -n "$QUESTIONS_TAIL" ]]; then
     cat >>"$out" <<EOF
 
@@ -219,18 +240,12 @@ $ANSWERS_TAIL
 EOF
   fi
 
-  # Append overlay last.
   if [[ -n "$overlay" ]]; then
     printf "\n%s\n" "$overlay" >>"$out"
   fi
 }
 
-
 maybe_notify() {
-  # Optional ntfy.sh; enable by setting:
-  #   NTFY_URL (default https://ntfy.sh)
-  #   NTFY_TOPIC (required)
-  # and ensure curl exists.
   local title="$1" file="$2"
   local url="${NTFY_URL:-https://ntfy.sh}"
   local topic="${NTFY_TOPIC:-}"
