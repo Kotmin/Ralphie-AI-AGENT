@@ -197,10 +197,19 @@ for ((i=1; i<=ITERATIONS; i++)); do
   state_set "$STATE_JSON" ".iteration" "$i"
   state_set "$STATE_JSON" ".last_event" "\"Iteration $i\""
 
-  # Determine current task: prefer state.current_task_id if it’s planned & not done.
-  CUR_TASK="$(state_get "$STATE_JSON" '.current_task_id' || true)"
-  CUR_TASK="$(strip_json_string "$CUR_TASK")"
-  if [[ -z "$CUR_TASK" || "$(task_in_list "$CUR_TASK" "${PLANNED_TASKS[@]}")" -ne 1 || prd_task_is_done "$PRD_MD" "$CUR_TASK" ]]; then
+    # Determine current task: prefer state.current_task_id if it’s planned & not done.
+  CUR_TASK="$(strip_json_string "$(state_get "$STATE_JSON" '.current_task_id' || true)")"
+
+  NEED_PICK=0
+  if [[ -z "$CUR_TASK" ]]; then
+    NEED_PICK=1
+  elif ! task_in_list "$CUR_TASK" "${PLANNED_TASKS[@]}"; then
+    NEED_PICK=1
+  elif prd_task_is_done "$PRD_MD" "$CUR_TASK"; then
+    NEED_PICK=1
+  fi
+
+  if [[ "$NEED_PICK" -eq 1 ]]; then
     CUR_TASK="$(next_pending_planned_task "$PRD_MD" "${PLANNED_TASKS[@]}")"
     if [[ -z "$CUR_TASK" ]]; then
       log "All planned tasks appear DONE. Finishing run."
@@ -208,6 +217,7 @@ for ((i=1; i<=ITERATIONS; i++)); do
     fi
     state_set "$STATE_JSON" ".current_task_id" "\"$CUR_TASK\""
   fi
+
 
   # Sync tracking into worktree as .ralph_tracking/
   sync_tracking_to_worktree "$TRACK_DIR" "$WORKDIR/.ralph_tracking"

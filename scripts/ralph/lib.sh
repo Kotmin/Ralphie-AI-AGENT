@@ -312,10 +312,11 @@ task_in_list() {
   local needle="$1"; shift
   local t
   for t in "$@"; do
-    [[ "$t" == "$needle" ]] && { echo 1; return 0; }
+    [[ "$t" == "$needle" ]] && return 0
   done
-  echo 0
+  return 1
 }
+
 
 next_pending_planned_task() {
   local prd="$1"; shift
