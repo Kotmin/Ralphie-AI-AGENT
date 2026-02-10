@@ -1,6 +1,1 @@
 # Ralph Progress Log (append-only)
-# 
-# Conventions:
-# - ITER_START / ITER_END mark one Claude invocation
-# - DONE markers must correspond to PRD checkbox changes
-# - This file is NOT a source of truth, only a log

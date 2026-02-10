@@ -1,10 +1,10 @@
 {
-  "run_id": "",
-  "current_task_id": "",
-  "planned_tasks": [],
   "completed_tasks": [],
+  "current_task_id": "",
   "iteration": 0,
-  "status": "IDLE",
   "last_event": "",
-  "questions": []
+  "planned_tasks": [],
+  "questions": [],
+  "run_id": "",
+  "status": "IDLE"
 }
