@@ -38,10 +38,23 @@ Observability:
 Worktree lifecycle:
   --reset-worktree       remove and recreate worktree for this run branch
   --cleanup              remove worktree when run finishes successfully
+  --cleanup-on-fail      remove worktree even on failure
+  --cleanup-stale N      remove Ralph worktrees older than N days (default 7)
 
 Branching:
   --branch NAME          explicit branch name (skips auto naming)
   --branch-from-tasks 0|1   default 1 (try name like ralph/US-001-US-005 when clean)
+
+Testing:
+  --max-retries N        max test retries per task (default 3)
+  --no-tests             skip test discovery and execution
+
+Syncing:
+  --sync                 fetch and ff-only pull before starting
+
+Integration:
+  --integrate            rebase and integrate changes when done
+  --target-branch NAME   branch to integrate into (default: current branch at start)
 
 Notes:
 - Source of truth for DONE is the PRD checkbox in .ralph/tracking/PRD.md
@@ -62,9 +75,23 @@ DRY_RUN=0
 
 RESET_WORKTREE=0
 CLEANUP=0
+CLEANUP_ON_FAIL=0
+CLEANUP_STALE=0
+STALE_DAYS=7
 
 BRANCH_NAME=""
 BRANCH_FROM_TASKS=1
+
+# US-006: Test-and-fix loop settings
+MAX_RETRIES=3
+RUN_TESTS=1
+
+# US-013: Safe sync settings
+SYNC_BEFORE_RUN=0
+
+# US-012: Integration settings
+INTEGRATE_ON_DONE=0
+INVOKED_BRANCH=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -79,26 +106,74 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --reset-worktree) RESET_WORKTREE=1; shift ;;
     --cleanup) CLEANUP=1; shift ;;
+    --cleanup-on-fail) CLEANUP_ON_FAIL=1; shift ;;
+    --cleanup-stale) CLEANUP_STALE=1; STALE_DAYS="${2:-7}"; shift 2 ;;
     --branch) BRANCH_NAME="${2:?}"; shift 2 ;;
     --branch-from-tasks) BRANCH_FROM_TASKS="${2:?}"; shift 2 ;;
+    --max-retries) MAX_RETRIES="${2:?}"; shift 2 ;;
+    --no-tests) RUN_TESTS=0; shift ;;
+    --sync) SYNC_BEFORE_RUN=1; shift ;;
+    --integrate) INTEGRATE_ON_DONE=1; shift ;;
+    --target-branch) INVOKED_BRANCH="${2:?}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-require_cmd git
-require_cmd python3
-require_cmd mktemp
-require_cmd date
-require_cmd rsync
+# US-012: Detect invoked branch if not specified
+if [[ -z "$INVOKED_BRANCH" ]]; then
+  INVOKED_BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+fi
+
+# US-002: Command Capability Verification
+# Verify all required commands before proceeding
+if ! verify_required_commands; then
+  echo "ERROR: Required commands missing. Cannot proceed." >&2
+  exit 127
+fi
 
 detect_claude_cmd
 
+# US-001: Repository State Scan (Bootstrap)
+# Validates repo structure and creates .ralph directories if needed
+if ! repo_scan_bootstrap "$ROOT_DIR"; then
+  echo "ERROR: Repository scan failed. Cannot proceed." >&2
+  exit 1
+fi
+
+# US-014: Cleanup stale worktrees if requested
+if [[ "$CLEANUP_STALE" -eq 1 ]]; then
+  cleanup_stale_worktrees "$ROOT_DIR" "$STALE_DAYS"
+fi
+
+# US-014: Detect orphan worktrees at startup
+ORPHANS="$(detect_orphan_worktrees "$ROOT_DIR" 2>/dev/null || true)"
+if [[ -n "$ORPHANS" ]]; then
+  log "WARNING: Orphaned Ralph worktrees detected:"
+  echo "$ORPHANS" | while IFS= read -r line; do log "  $line"; done
+fi
+
 # Ensure tracking files exist (repo-local, gitignored)
-mkdir -p "$TRACK_DIR"
 ensure_tracking_files_exist "$TRACK_DIR"
 
 ensure_state_schema "$STATE_JSON"
+
+# US-008: Check for clarification protocol - resume only if answers exist
+PREV_STATUS="$(strip_json_string "$(state_get "$STATE_JSON" '.status' || true)")"
+if [[ "$PREV_STATUS" == "NEEDS_CLARIFICATION" ]]; then
+  log "Previous run requested clarification."
+  # Check if answers.md has content beyond the header
+  ANSWER_LINES="$(tail -n +2 "$ANSWERS_MD" 2>/dev/null | grep -v '^[[:space:]]*$' | wc -l)"
+  if [[ "$ANSWER_LINES" -eq 0 ]]; then
+    log "ERROR: No answers found in $ANSWERS_MD"
+    log "Please add answers to the questions in $QUESTIONS_MD before resuming."
+    exit 1
+  fi
+  log "Found answers - resuming execution."
+  state_set "$STATE_JSON" ".status" "\"IN_PROGRESS\""
+  state_set "$STATE_JSON" ".last_event" "\"Resumed after clarification\""
+  append_progress "$PROGRESS_TXT" "RESUME: from NEEDS_CLARIFICATION @ $(now_iso)"
+fi
 
 # Preflight: verify headless works and quota/auth is OK (cheap)
 if [[ "$DRY_RUN" -eq 0 ]]; then
@@ -109,7 +184,18 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
   fi
 fi
 
-# If user forces a task-id, we’ll honor it as starting task.
+# US-013: Optional safe sync before run
+if [[ "$SYNC_BEFORE_RUN" -eq 1 ]]; then
+  log "Syncing with remote (--sync requested)..."
+  if ! safe_sync_branch "$ROOT_DIR"; then
+    log "ERROR: Safe sync failed. Remote has diverged - manual resolution required."
+    state_set "$STATE_JSON" ".status" "\"SYNC_CONFLICT\""
+    state_set "$STATE_JSON" ".last_event" "\"Remote sync failed - ff-only not possible\""
+    exit 1
+  fi
+fi
+
+# If user forces a task-id, we'll honor it as starting task.
 # Otherwise we load from state unless force-new-task.
 if [[ -z "$TASK_ID" ]]; then
   if [[ "$FORCE_NEW_TASK" -eq 1 ]]; then
@@ -127,10 +213,17 @@ if [[ -z "$TASK_ID" ]]; then
   TASK_ID="$(prd_pick_next_task "$PRD_MD")"
 fi
 
+# US-003: If no unchecked tasks remain, set status to DONE
 if [[ -z "$TASK_ID" ]]; then
-  log "No remaining unchecked tasks found in PRD. Nothing to do."
+  log "No remaining unchecked tasks found in PRD. Setting status to DONE."
+  state_set "$STATE_JSON" ".status" "\"DONE\""
+  state_set "$STATE_JSON" ".last_event" "\"All tasks completed\""
+  append_progress "$PROGRESS_TXT" "=== ALL_TASKS_DONE @ $(now_iso) ==="
   exit 0
 fi
+
+# US-003: Write selected task to state immediately
+state_set "$STATE_JSON" ".current_task_id" "\"$TASK_ID\""
 
 # Plan batch (list of task IDs)
 mapfile -t PLANNED_TASKS < <(prd_plan_tasks "$PRD_MD" "$TASK_ID" "$BATCH_SIZE")
@@ -170,14 +263,20 @@ if [[ "$RESET_WORKTREE" -eq 1 && "$NO_WORKTREE" -eq 0 ]]; then
 fi
 
 state_set "$STATE_JSON" ".status" "\"IN_PROGRESS\""
+state_set "$STATE_JSON" ".branch" "\"$BRANCH_NAME\""
 state_set "$STATE_JSON" ".last_event" "\"Planned ${#PLANNED_TASKS[@]} tasks on branch $BRANCH_NAME\""
 append_progress "$PROGRESS_TXT" "=== RUN_START run_id=$RUN_ID branch=$BRANCH_NAME @ $(now_iso) ==="
 
 if [[ "$NO_WORKTREE" -eq 1 ]]; then
   WORKDIR="$ROOT_DIR"
+  state_set "$STATE_JSON" ".worktree_path" "\"(none - running in root)\""
 else
   prepare_worktree "$ROOT_DIR" "$WORKTREE_DIR" "$BRANCH_NAME"
   WORKDIR="$WORKTREE_DIR"
+  # US-004: Record worktree path in state for observability
+  state_set "$STATE_JSON" ".worktree_path" "\"$WORKTREE_DIR\""
+  # US-014: Register worktree ownership
+  register_worktree "$ROOT_DIR" "$WORKTREE_DIR" "$RUN_ID" "$BRANCH_NAME"
 fi
 
 chmod -R u+rwX "$WORKDIR" 2>/dev/null || true
@@ -191,6 +290,21 @@ log "Workdir: $WORKDIR"
 log "Planned tasks: ${PLANNED_TASKS[*]}"
 log "Iterations: $ITERATIONS | Batch size: $BATCH_SIZE"
 log "Timeout/iter: ${TIMEOUT_SEC}s"
+log "Max retries: $MAX_RETRIES | Run tests: $RUN_TESTS"
+
+# US-006: Track retry counts per task
+declare -A TASK_RETRIES
+
+# Discover test command once at start
+TEST_CMD=""
+if [[ "$RUN_TESTS" -eq 1 ]]; then
+  TEST_CMD="$(discover_test_command "$WORKDIR" "$PRD_MD" "")"
+  if [[ -n "$TEST_CMD" ]]; then
+    log "Discovered test command: $TEST_CMD"
+  else
+    log "No test command discovered - tests will be skipped"
+  fi
+fi
 
 # Main loop: iterate Claude invocations, advancing tasks as PRD checkboxes are ticked.
 for ((i=1; i<=ITERATIONS; i++)); do
@@ -295,11 +409,50 @@ for ((i=1; i<=ITERATIONS; i++)); do
     exit 0
   fi
 
-  # If current task got marked done, record it
+  # US-006: Run tests if task appears done and tests are available
   if prd_task_is_done "$PRD_MD" "$CUR_TASK"; then
-    append_completed_task "$STATE_JSON" "$CUR_TASK"
-    append_progress "$PROGRESS_TXT" "TASK_DONE: run_id=$RUN_ID task=$CUR_TASK @ $(now_iso)"
-    log "Task $CUR_TASK marked DONE in PRD."
+    if [[ -n "$TEST_CMD" && "$RUN_TESTS" -eq 1 ]]; then
+      log "Task $CUR_TASK marked done - running tests..."
+      TEST_LOG="$LOG_DIR/iter-$(printf '%03d' "$i")-$CUR_TASK-tests.log"
+
+      if run_test_command "$WORKDIR" "$TEST_CMD" "$TEST_LOG"; then
+        # Tests passed - verify commit discipline (US-009)
+        verify_commit_discipline "$WORKDIR" "$CUR_TASK" || true
+        verify_clean_git_status "$WORKDIR" || true
+        # Task is truly done
+        append_completed_task "$STATE_JSON" "$CUR_TASK"
+        append_progress "$PROGRESS_TXT" "TASK_DONE: run_id=$RUN_ID task=$CUR_TASK (tests passed) @ $(now_iso)"
+        log "Task $CUR_TASK completed with passing tests."
+        TASK_RETRIES["$CUR_TASK"]=0
+      else
+        # Tests failed - increment retry counter
+        TASK_RETRIES["$CUR_TASK"]=$((${TASK_RETRIES["$CUR_TASK"]:-0} + 1))
+        RETRY_COUNT="${TASK_RETRIES["$CUR_TASK"]}"
+        append_progress "$PROGRESS_TXT" "TEST_FAIL: run_id=$RUN_ID task=$CUR_TASK retry=$RETRY_COUNT/$MAX_RETRIES @ $(now_iso)"
+
+        if [[ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]]; then
+          # Max retries exceeded - stop
+          state_set "$STATE_JSON" ".status" "\"TEST_FAILURE\""
+          state_set "$STATE_JSON" ".last_event" "\"Tests failed after $MAX_RETRIES retries for $CUR_TASK\""
+          append_progress "$PROGRESS_TXT" "STOP: TEST_FAILURE run_id=$RUN_ID task=$CUR_TASK retries=$RETRY_COUNT @ $(now_iso)"
+          log "ERROR: Tests failed after $MAX_RETRIES retries for task $CUR_TASK"
+          maybe_notify "Ralph test failure (run $RUN_ID task $CUR_TASK)" "$PROGRESS_TXT"
+          exit 1
+        else
+          # Unmark task as done (Claude marked it prematurely) - it will retry
+          log "Tests failed (retry $RETRY_COUNT/$MAX_RETRIES) - will retry task $CUR_TASK"
+          # Note: We don't unmark in PRD - Claude should see the failure context next iteration
+        fi
+      fi
+    else
+      # No tests to run - verify commit discipline (US-009)
+      verify_commit_discipline "$WORKDIR" "$CUR_TASK" || true
+      verify_clean_git_status "$WORKDIR" || true
+      # Task is done
+      append_completed_task "$STATE_JSON" "$CUR_TASK"
+      append_progress "$PROGRESS_TXT" "TASK_DONE: run_id=$RUN_ID task=$CUR_TASK (no tests) @ $(now_iso)"
+      log "Task $CUR_TASK marked DONE in PRD."
+    fi
   fi
 done
 
@@ -308,6 +461,28 @@ if all_planned_tasks_done "$PRD_MD" "${PLANNED_TASKS[@]}"; then
   state_set "$STATE_JSON" ".status" "\"DONE\""
   state_set "$STATE_JSON" ".last_event" "\"All planned tasks done\""
   append_progress "$PROGRESS_TXT" "=== RUN_DONE run_id=$RUN_ID branch=$BRANCH_NAME @ $(now_iso) ==="
+
+  # US-012: Integration on completion
+  if [[ "$INTEGRATE_ON_DONE" -eq 1 && "$NO_WORKTREE" -eq 0 ]]; then
+    log "Integrating changes into $INVOKED_BRANCH..."
+    if integrate_with_rebase "$WORKDIR" "$INVOKED_BRANCH" "$TEST_CMD"; then
+      if finalize_integration "$ROOT_DIR" "$WORKDIR" "$INVOKED_BRANCH"; then
+        append_progress "$PROGRESS_TXT" "INTEGRATED: run_id=$RUN_ID into $INVOKED_BRANCH @ $(now_iso)"
+        log "Integration successful"
+      else
+        state_set "$STATE_JSON" ".status" "\"INTEGRATION_FAILED\""
+        state_set "$STATE_JSON" ".last_event" "\"Failed to finalize integration\""
+        append_progress "$PROGRESS_TXT" "INTEGRATION_FAILED: run_id=$RUN_ID @ $(now_iso)"
+        log "ERROR: Integration failed"
+      fi
+    else
+      state_set "$STATE_JSON" ".status" "\"REBASE_CONFLICT\""
+      state_set "$STATE_JSON" ".last_event" "\"Rebase conflict - manual resolution required\""
+      append_progress "$PROGRESS_TXT" "REBASE_CONFLICT: run_id=$RUN_ID @ $(now_iso)"
+      log "ERROR: Rebase conflict - manual resolution required"
+    fi
+  fi
+
   maybe_notify "Ralph finished run $RUN_ID" "$PROGRESS_TXT"
 else
   state_set "$STATE_JSON" ".status" "\"STOPPED\""
@@ -315,10 +490,29 @@ else
   append_progress "$PROGRESS_TXT" "=== RUN_STOP run_id=$RUN_ID branch=$BRANCH_NAME @ $(now_iso) ==="
 fi
 
-log "Run complete. State: $(strip_json_string "$(state_get "$STATE_JSON" '.status' || true)")"
+FINAL_STATUS="$(strip_json_string "$(state_get "$STATE_JSON" '.status' || true)")"
+log "Run complete. State: $FINAL_STATUS"
 
-# Optional cleanup
-if [[ "$CLEANUP" -eq 1 && "$NO_WORKTREE" -eq 0 ]]; then
-  log "Cleanup requested. Removing worktree: $WORKTREE_DIR"
-  git_worktree_remove_safe "$ROOT_DIR" "$WORKTREE_DIR"
+# US-014: Worktree cleanup logic
+if [[ "$NO_WORKTREE" -eq 0 ]]; then
+  SHOULD_CLEANUP=0
+
+  # Cleanup on success
+  if [[ "$CLEANUP" -eq 1 && "$FINAL_STATUS" == "DONE" ]]; then
+    SHOULD_CLEANUP=1
+  fi
+
+  # Cleanup on failure (if explicitly requested)
+  if [[ "$CLEANUP_ON_FAIL" -eq 1 && "$FINAL_STATUS" != "DONE" ]]; then
+    SHOULD_CLEANUP=1
+  fi
+
+  if [[ "$SHOULD_CLEANUP" -eq 1 ]]; then
+    log "Cleanup: Removing worktree $WORKTREE_DIR"
+    git_worktree_remove_safe "$ROOT_DIR" "$WORKTREE_DIR"
+    unregister_worktree "$ROOT_DIR" "$WORKTREE_DIR"
+    append_progress "$PROGRESS_TXT" "CLEANUP: worktree=$WORKTREE_DIR @ $(now_iso)"
+  else
+    log "Worktree preserved at: $WORKTREE_DIR"
+  fi
 fi

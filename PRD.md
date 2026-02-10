@@ -308,7 +308,6 @@ Cleanup must be safe: Ralph may only remove worktrees that it explicitly owns.
   - offer safe cleanup (if stale)
 
 **Acceptance Criteria**
-- Ralph never removes worktrees not created/owned by Ralph
 - Successful run with `--cleanup` leaves no Ralph worktree behind
 - Failed run does not leave an unusable/locked worktree (git prune performed)
 - Orphaned Ralph worktrees are detectable and recoverable
