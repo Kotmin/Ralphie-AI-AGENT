@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-RALPH_DIR="$ROOT_DIR/scripts/ralph"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RALPH_DIR="$ROOT_DIR/ralph"
 
-TRACK_DIR="$ROOT_DIR/.ralph/tracking"
-QUESTIONS_MD="$TRACK_DIR/questions.md"
-ANSWERS_MD="$TRACK_DIR/answers.md"
-STATE_JSON="$TRACK_DIR/state.json"
-PRD_MD="$TRACK_DIR/PRD.md"
-PROGRESS_TXT="$TRACK_DIR/progress.txt"
+TRACK_DIR="${RALPH_TRACK_DIR:-$ROOT_DIR/.ralph/tracking}"
 
 # Workspaces
 WORKTREE_BASE="$ROOT_DIR/.ralph/worktrees"
@@ -18,9 +13,12 @@ LOG_BASE="$ROOT_DIR/.ralph/logs"
 # shellcheck source=lib.sh
 source "$RALPH_DIR/lib.sh"
 
+# Load project config from ralph/ralph.yaml (sets RALPH_TEST_CMD, etc.)
+load_project_config "$ROOT_DIR"
+
 usage() {
   cat <<'EOF'
-Usage: scripts/ralph/ralph.sh [options]
+Usage: ralph/ralph.sh [options]
 
 Core options:
   --iterations N         default 10 (max Claude invocations for this run)
@@ -55,6 +53,7 @@ Syncing:
 Integration:
   --integrate            rebase and integrate changes when done
   --target-branch NAME   branch to integrate into (default: current branch at start)
+  --tracking-dir PATH    override tracking directory (default: .ralph/tracking)
 
 Notes:
 - Source of truth for DONE is the PRD checkbox in .ralph/tracking/PRD.md
@@ -67,6 +66,7 @@ BATCH_SIZE=5
 TASK_ID=""
 FORCE_NEW_TASK=0
 NO_WORKTREE=0
+MODE="build"  # build | plan
 
 TIMEOUT_SEC=900
 HEARTBEAT_SEC=15
@@ -85,6 +85,8 @@ BRANCH_FROM_TASKS=1
 # US-006: Test-and-fix loop settings
 MAX_RETRIES=3
 RUN_TESTS=1
+SKIP_PREFLIGHT=0
+MAX_NO_PROGRESS=2
 
 # US-013: Safe sync settings
 SYNC_BEFORE_RUN=0
@@ -100,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     --task-id) TASK_ID="${2:?}"; shift 2 ;;
     --force-new-task) FORCE_NEW_TASK=1; shift ;;
     --no-worktree) NO_WORKTREE=1; shift ;;
+    --mode) MODE="${2:?}"; shift 2 ;;
     --timeout-sec) TIMEOUT_SEC="${2:?}"; shift 2 ;;
     --heartbeat-sec) HEARTBEAT_SEC="${2:?}"; shift 2 ;;
     --verbose) VERBOSE=1; shift ;;
@@ -112,13 +115,29 @@ while [[ $# -gt 0 ]]; do
     --branch-from-tasks) BRANCH_FROM_TASKS="${2:?}"; shift 2 ;;
     --max-retries) MAX_RETRIES="${2:?}"; shift 2 ;;
     --no-tests) RUN_TESTS=0; shift ;;
+    --no-preflight) SKIP_PREFLIGHT=1; shift ;;
+    --max-no-progress) MAX_NO_PROGRESS="${2:?}"; shift 2 ;;
     --sync) SYNC_BEFORE_RUN=1; shift ;;
     --integrate) INTEGRATE_ON_DONE=1; shift ;;
     --target-branch) INVOKED_BRANCH="${2:?}"; shift 2 ;;
+    --tracking-dir) TRACK_DIR="${2:?}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+# Resolve prompt file from mode
+case "$MODE" in
+  plan)  RALPH_PROMPT_FILE="$RALPH_DIR/PROMPT_plan.md" ;;
+  build) RALPH_PROMPT_FILE="$RALPH_DIR/PROMPT_build.md" ;;
+  *)     echo "Unknown --mode: $MODE (use build or plan)" >&2; exit 2 ;;
+esac
+
+QUESTIONS_MD="$TRACK_DIR/questions.md"
+ANSWERS_MD="$TRACK_DIR/answers.md"
+STATE_JSON="$TRACK_DIR/state.json"
+PRD_MD="$TRACK_DIR/PRD.md"
+PROGRESS_TXT="$TRACK_DIR/progress.txt"
 
 # US-012: Detect invoked branch if not specified
 if [[ -z "$INVOKED_BRANCH" ]]; then
@@ -176,7 +195,7 @@ if [[ "$PREV_STATUS" == "NEEDS_CLARIFICATION" ]]; then
 fi
 
 # Preflight: verify headless works and quota/auth is OK (cheap)
-if [[ "$DRY_RUN" -eq 0 ]]; then
+if [[ "$DRY_RUN" -eq 0 && "$SKIP_PREFLIGHT" -eq 0 ]]; then
   log "Preflight: checking Claude headless availability..."
   if ! claude_preflight "$ROOT_DIR"; then
     log "Preflight failed (auth/quota?). Exiting early."
@@ -232,9 +251,9 @@ if [[ "${#PLANNED_TASKS[@]}" -eq 0 ]]; then
   exit 2
 fi
 
-# Establish run_id if missing
+# Establish run_id if missing or invalid ("null" from JSON null, empty, or quoted empty)
 RUN_ID="$(state_get "$STATE_JSON" '.run_id' || true)"
-if [[ -z "$RUN_ID" || "$RUN_ID" == "\"\"" ]]; then
+if [[ -z "$RUN_ID" || "$RUN_ID" == "\"\"" || "$RUN_ID" == "null" ]]; then
   RUN_ID="$(run_id_now)"
   state_set "$STATE_JSON" ".run_id" "\"$RUN_ID\""
 fi
@@ -294,15 +313,21 @@ log "Max retries: $MAX_RETRIES | Run tests: $RUN_TESTS"
 
 # US-006: Track retry counts per task
 declare -A TASK_RETRIES
+declare -A TASK_NO_PROGRESS
 
-# Discover test command once at start
+# Determine test command: prefer ralph.yaml config, fall back to auto-discovery
 TEST_CMD=""
 if [[ "$RUN_TESTS" -eq 1 ]]; then
-  TEST_CMD="$(discover_test_command "$WORKDIR" "$PRD_MD" "")"
-  if [[ -n "$TEST_CMD" ]]; then
-    log "Discovered test command: $TEST_CMD"
+  if [[ -n "${RALPH_TEST_CMD:-}" ]]; then
+    TEST_CMD="$RALPH_TEST_CMD"
+    log "Test command (from ralph.yaml): $TEST_CMD"
   else
-    log "No test command discovered - tests will be skipped"
+    TEST_CMD="$(discover_test_command "$WORKDIR" "$PRD_MD" "")"
+    if [[ -n "$TEST_CMD" ]]; then
+      log "Discovered test command: $TEST_CMD"
+    else
+      log "No test command discovered - tests will be skipped"
+    fi
   fi
 fi
 
@@ -348,7 +373,8 @@ for ((i=1; i<=ITERATIONS; i++)); do
     --progress "$WORKDIR/.ralph_tracking/progress.txt" \
     --state "$WORKDIR/.ralph_tracking/state.json" \
     --questions "$WORKDIR/.ralph_tracking/questions.md" \
-    --answers "$WORKDIR/.ralph_tracking/answers.md"
+    --answers "$WORKDIR/.ralph_tracking/answers.md" \
+    --skill-prompt "$RALPH_PROMPT_FILE"
 
   LOG_FILE="$LOG_DIR/iter-$(printf '%03d' "$i")-$CUR_TASK.log"
   log "Iteration=$i task=$CUR_TASK starting. Log: $LOG_FILE"
@@ -358,6 +384,8 @@ for ((i=1; i<=ITERATIONS; i++)); do
     log "[dry-run] Would run Claude for iter=$i task=$CUR_TASK"
     continue
   fi
+
+  PREV_SHA="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
 
   set +e
   run_with_timeout_and_observability \
@@ -407,6 +435,28 @@ for ((i=1; i<=ITERATIONS; i++)); do
     append_progress "$PROGRESS_TXT" "PAUSE: NEEDS_CLARIFICATION run_id=$RUN_ID task=$CUR_TASK iter=$i @ $(now_iso)"
     maybe_notify "Ralph needs clarification (run $RUN_ID task $CUR_TASK)" "$PROGRESS_TXT"
     exit 0
+  fi
+
+  # No-op detection: if Claude produced no commits and no uncommitted changes,
+  # auto-advance after MAX_NO_PROGRESS consecutive idle iterations.
+  if ! prd_task_is_done "$PRD_MD" "$CUR_TASK"; then
+    CUR_SHA="$(git -C "$WORKDIR" rev-parse HEAD 2>/dev/null || true)"
+    WORKDIR_DIRTY="$(git -C "$WORKDIR" status --porcelain 2>/dev/null || true)"
+    if [[ "$CUR_SHA" == "$PREV_SHA" && -z "$WORKDIR_DIRTY" ]]; then
+      TASK_NO_PROGRESS["$CUR_TASK"]=$(( ${TASK_NO_PROGRESS["$CUR_TASK"]:-0} + 1 ))
+      NOP="${TASK_NO_PROGRESS[$CUR_TASK]}"
+      log "Task $CUR_TASK: no changes iter=$i (no-op $NOP/$MAX_NO_PROGRESS)"
+      append_progress "$PROGRESS_TXT" "NO_PROGRESS: run_id=$RUN_ID task=$CUR_TASK nop=$NOP/$MAX_NO_PROGRESS @ $(now_iso)"
+      if [[ "$NOP" -ge "$MAX_NO_PROGRESS" ]]; then
+        log "Task $CUR_TASK: auto-advancing after $NOP no-op iterations"
+        prd_mark_task_done "$PRD_MD" "$CUR_TASK"
+        append_completed_task "$STATE_JSON" "$CUR_TASK"
+        append_progress "$PROGRESS_TXT" "AUTO_DONE: run_id=$RUN_ID task=$CUR_TASK (no-op x$NOP) @ $(now_iso)"
+        TASK_NO_PROGRESS["$CUR_TASK"]=0
+      fi
+    else
+      TASK_NO_PROGRESS["$CUR_TASK"]=0
+    fi
   fi
 
   # US-006: Run tests if task appears done and tests are available

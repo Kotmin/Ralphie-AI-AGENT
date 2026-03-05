@@ -4,6 +4,175 @@ set -euo pipefail
 log() { printf '[ralph] %s\n' "$*" >&2; }
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
+# ─── Project Config (ralph.yaml) ──────────────────────────────────────────────
+
+# Read a dotted key from ralph.yaml using python3 (no external yaml deps).
+# Usage: yaml_get <yaml_file> <dotted.key>
+yaml_get() {
+  local yaml_file="$1" key="$2"
+  python3 - "$yaml_file" "$key" <<'PY'
+import sys, re
+
+def parse_yaml(lines):
+    """Minimal YAML parser: scalars, block scalars (|), nested dicts, list-of-dicts."""
+    root = {}
+    stack = [(-1, root)]   # (indent, container)
+
+    def current(): return stack[-1][1]
+    def pop_to(indent):
+        while len(stack) > 1 and stack[-1][0] >= indent:
+            stack.pop()
+
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.lstrip()
+        if not stripped or stripped.startswith("#"):
+            i += 1; continue
+        indent = len(raw) - len(stripped)
+
+        # List item
+        if stripped.startswith("- "):
+            pop_to(indent)
+            parent = stack[-1][1]
+            # The parent dict's last key should be the list container
+            if isinstance(parent, dict) and parent:
+                list_key = list(parent.keys())[-1]
+                if not isinstance(parent[list_key], list):
+                    parent[list_key] = []
+                item = {}
+                parent[list_key].append(item)
+                rest = stripped[2:].strip()
+                m = re.match(r'^([\w-]+)\s*:\s*(.*)', rest)
+                if m:
+                    item[m.group(1)] = m.group(2).strip().strip("\"'")
+                stack.append((indent + 2, item))
+            i += 1; continue
+
+        pop_to(indent)
+        m = re.match(r'^([\w-]+)\s*:\s*(.*)', stripped)
+        if not m:
+            i += 1; continue
+
+        k, v = m.group(1), m.group(2).strip()
+        parent = current()
+
+        if v == "|":
+            # Block scalar
+            block = []
+            i += 1
+            base = None
+            while i < len(lines):
+                bl = lines[i]
+                bs = bl.lstrip()
+                if not bs:
+                    block.append(""); i += 1; continue
+                bi = len(bl) - len(bs)
+                if base is None: base = bi
+                if bi < base: break
+                block.append(bl[base:].rstrip())
+                i += 1
+            parent[k] = "\n".join(block).strip()
+            continue
+        elif v in ("", "~"):
+            d = {}
+            parent[k] = d
+            stack.append((indent, d))
+        else:
+            parent[k] = v.strip("\"'")
+        i += 1
+    return root
+
+p, key = sys.argv[1], sys.argv[2]
+try:
+    with open(p, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    data = parse_yaml(lines)
+    val = data
+    for part in key.split("."):
+        val = val.get(part, "") if isinstance(val, dict) else ""
+    if isinstance(val, (list, dict)):
+        import json; print(json.dumps(val))
+    else:
+        print(val or "")
+except Exception:
+    print("")
+PY
+}
+
+# Load project config from ralph/ralph.yaml into exported env vars.
+# Sets: RALPH_TEST_CMD, RALPH_BUILD_CMD, RALPH_DEV_CMD, RALPH_PRD,
+#       RALPH_MERGE_INTO, RALPH_PROJECT
+load_project_config() {
+  local root="${1:-}"
+  if [[ -z "$root" ]]; then
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  fi
+  local yaml="$root/ralph/ralph.yaml"
+
+  if [[ ! -f "$yaml" ]]; then
+    log "WARNING: $yaml not found — skipping project config load"
+    return 0
+  fi
+
+  RALPH_PROJECT="$(yaml_get "$yaml" "project")"
+  RALPH_PRD="$(yaml_get "$yaml" "prd")"
+  RALPH_MERGE_INTO="$(yaml_get "$yaml" "merge_into")"
+  RALPH_TEST_CMD="$(yaml_get "$yaml" "runner.test")"
+  RALPH_BUILD_CMD="$(yaml_get "$yaml" "runner.build")"
+  RALPH_DEV_CMD="$(yaml_get "$yaml" "runner.dev")"
+
+  export RALPH_PROJECT RALPH_PRD RALPH_MERGE_INTO RALPH_TEST_CMD RALPH_BUILD_CMD RALPH_DEV_CMD
+  log "Config: project=${RALPH_PROJECT} prd=${RALPH_PRD} merge_into=${RALPH_MERGE_INTO}"
+}
+
+# Source parallel agent table from ralph.yaml into shell variables.
+# After calling: AGENT_LABELS array, AGENT_TASK_<label>, AGENT_BATCH_<label>
+load_parallel_agents() {
+  local yaml="$1"
+  local agent_sh
+  agent_sh="$(python3 - "$yaml" <<'PY'
+import sys, re
+
+def parse_agents(lines):
+    agents = []
+    in_agents = False
+    current = None
+    for line in lines:
+        s = line.lstrip()
+        indent = len(line) - len(s)
+        if re.match(r'agents\s*:', s):
+            in_agents = True; continue
+        if not in_agents: continue
+        if not s or s.startswith("#"): continue
+        if indent == 0 and not s.startswith("-"): break
+        if s.startswith("- "):
+            if current is not None: agents.append(current)
+            current = {}
+            rest = s[2:].strip()
+            m = re.match(r'([\w-]+):\s*(.*)', rest)
+            if m: current[m.group(1)] = m.group(2).strip().strip("\"'")
+        elif current is not None and indent >= 4:
+            m = re.match(r'([\w-]+):\s*(.*)', s)
+            if m: current[m.group(1)] = m.group(2).strip().strip("\"'")
+    if current is not None: agents.append(current)
+    return agents
+
+with open(sys.argv[1], "r") as f:
+    lines = f.readlines()
+
+agents = parse_agents(lines)
+labels = [a.get("label", "") for a in agents]
+print(f'AGENT_LABELS=({" ".join(labels)})')
+for a in agents:
+    lbl = a.get("label", "")
+    print(f'AGENT_TASK_{lbl}="{a.get("task", "")}"')
+    print(f'AGENT_BATCH_{lbl}="{a.get("batch", "1")}"')
+PY
+)"
+  eval "$agent_sh"
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1" >&2; exit 127; }
 }
@@ -302,6 +471,22 @@ discover_test_command() {
     fi
   fi
 
+  # Gradle wrapper
+  if [[ -f "$workdir/gradlew" ]]; then
+    echo "./gradlew test --no-daemon"
+    return 0
+  fi
+
+  # Maven wrapper or bare Maven
+  if [[ -f "$workdir/pom.xml" ]]; then
+    if [[ -f "$workdir/mvnw" ]]; then
+      echo "./mvnw -q test"
+    else
+      echo "mvn -q test"
+    fi
+    return 0
+  fi
+
   # pyproject.toml with pytest
   if [[ -f "$workdir/pyproject.toml" ]]; then
     if grep -q 'pytest' "$workdir/pyproject.toml" 2>/dev/null; then
@@ -470,7 +655,7 @@ run_claude_headless_logged() {
     echo "===================================="
   } >>"$log_file"
 
-  ( cd "$workdir" && "${cmd[@]}" -p "$prompt" ) >>"$log_file" 2>&1
+  ( cd "$workdir" && "${cmd[@]}" --dangerously-skip-permissions -p "$prompt" ) >>"$log_file" 2>&1
 }
 
 sync_tracking_to_worktree() {
@@ -590,7 +775,7 @@ integrate_with_rebase() {
   fi
 
   # Check for any remaining conflict markers in files
-  if (cd "$workdir" && grep -rl '<<<<<<< ' --include='*.py' --include='*.js' --include='*.ts' --include='*.sh' --include='*.rb' --include='*.go' . 2>/dev/null | head -1 | grep -q .); then
+  if (cd "$workdir" && grep -rl '<<<<<<< ' --include='*.py' --include='*.js' --include='*.ts' --include='*.sh' --include='*.rb' --include='*.go' --include='*.java' --include='*.kt' . 2>/dev/null | head -1 | grep -q .); then
     log "ERROR: Conflict markers found in files after rebase"
     (cd "$workdir" && git rebase --abort 2>/dev/null) || true
     return 1
@@ -851,8 +1036,7 @@ PY
 
 sanitize_worktree_path() {
   local p="$1"
-  # Avoid slashes from branch names making nested directories unexpectedly
-  echo "$p" | sed 's#[/: ]#_#g'
+  echo "$p" | sed 's#[: ]#_#g'
 }
 
 run_id_now() {
@@ -864,9 +1048,9 @@ run_id_now() {
 prd_pick_next_task() {
   local prd="$1"
   local line
-  line="$(grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+US-[0-9]+' "$prd" | head -n1 || true)"
+  line="$(grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+[A-Z][A-Z0-9]*-[0-9]+' "$prd" | head -n1 || true)"
   [[ -n "$line" ]] || return 0
-  echo "$line" | sed -E 's/^###[[:space:]]+\[ \][[:space:]]+(US-[0-9]+).*/\1/'
+  echo "$line" | sed -E 's/^###[[:space:]]+\[ \][[:space:]]+([A-Z][A-Z0-9]*-[0-9]+).*/\1/'
 }
 
 prd_task_is_done() {
@@ -884,14 +1068,19 @@ prd_plan_tasks() {
 
   if [[ -n "$start_line" ]]; then
     tail -n +"$start_line" "$prd" \
-      | grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+US-[0-9]+' \
+      | grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+[A-Z][A-Z0-9]*-[0-9]+' \
       | head -n "$batch_size" \
-      | sed -E 's/^###[[:space:]]+\[ \][[:space:]]+(US-[0-9]+).*/\1/'
+      | sed -E 's/^###[[:space:]]+\[ \][[:space:]]+([A-Z][A-Z0-9]*-[0-9]+).*/\1/'
   else
-    grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+US-[0-9]+' "$prd" \
+    grep -E '^[#]{3}[[:space:]]+\[ \][[:space:]]+[A-Z][A-Z0-9]*-[0-9]+' "$prd" \
       | head -n "$batch_size" \
-      | sed -E 's/^###[[:space:]]+\[ \][[:space:]]+(US-[0-9]+).*/\1/'
+      | sed -E 's/^###[[:space:]]+\[ \][[:space:]]+([A-Z][A-Z0-9]*-[0-9]+).*/\1/'
   fi
+}
+
+prd_mark_task_done() {
+  local prd="$1" task="$2"
+  sed -i -E "s/^(###[[:space:]]+)\[ \]([[:space:]]+$task\b)/\1[x]\2/" "$prd"
 }
 
 task_in_list() {
@@ -930,39 +1119,42 @@ all_planned_tasks_done() {
 # Branch naming
 
 branch_name_from_tasks() {
-  # Produces:
-  # - ralph/US-001-US-005 if contiguous and short
-  # - otherwise empty (caller falls back)
   local tasks=("$@")
   [[ "${#tasks[@]}" -ge 1 ]] || { echo ""; return 0; }
 
   local first="${tasks[0]}"
   local last="${tasks[-1]}"
 
-  # Check contiguous numeric sequence US-XXX
-  local i
-  local first_n last_n cur_n
+  # US-XXX: verify contiguous sequence before naming
+  local first_n last_n
   first_n="$(echo "$first" | sed -E 's/^US-0*([0-9]+)$/\1/')"
   last_n="$(echo "$last" | sed -E 's/^US-0*([0-9]+)$/\1/')"
-  [[ "$first_n" =~ ^[0-9]+$ && "$last_n" =~ ^[0-9]+$ ]] || { echo ""; return 0; }
-
-  cur_n="$first_n"
-  for ((i=0; i<${#tasks[@]}; i++)); do
-    local expect="US-$(printf '%03d' "$cur_n")"
-    if [[ "${tasks[$i]}" != "$expect" ]]; then
-      echo ""
-      return 0
-    fi
-    cur_n=$((cur_n + 1))
-  done
-
-  local name="ralph/$first-$last"
-  # Hard cap to avoid pathological branch names
-  if [[ "${#name}" -gt 60 ]]; then
-    echo ""
+  if [[ "$first_n" =~ ^[0-9]+$ && "$last_n" =~ ^[0-9]+$ ]]; then
+    local i cur_n="$first_n"
+    for ((i=0; i<${#tasks[@]}; i++)); do
+      local expect="US-$(printf '%03d' "$cur_n")"
+      if [[ "${tasks[$i]}" != "$expect" ]]; then
+        echo ""
+        return 0
+      fi
+      cur_n=$((cur_n + 1))
+    done
+    local name="ralph/$first-$last"
+    [[ "${#name}" -le 60 ]] && echo "$name" || echo ""
     return 0
   fi
-  echo "$name"
+
+  # Other formats (W##-###, etc.): use first-last if they share the same prefix
+  local first_pfx last_pfx
+  first_pfx="$(echo "$first" | sed -E 's/^([A-Z][A-Z0-9]+-).*/\1/')"
+  last_pfx="$(echo "$last" | sed -E 's/^([A-Z][A-Z0-9]+-).*/\1/')"
+  if [[ "$first_pfx" == "$last_pfx" && -n "$first_pfx" ]]; then
+    local name="ralph/$first-$last"
+    [[ "${#name}" -le 60 ]] && echo "$name" || echo ""
+    return 0
+  fi
+
+  echo ""
 }
 
 ensure_tracking_files_exist() {
@@ -981,7 +1173,7 @@ ensure_tracking_files_exist() {
 }
 
 build_prompt() {
-  local out="" root="" workdir="" task="" prd="" progress="" state="" questions="" answers=""
+  local out="" root="" workdir="" task="" prd="" progress="" state="" questions="" answers="" skill_prompt_override=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --out) out="$2"; shift 2 ;;
@@ -993,11 +1185,26 @@ build_prompt() {
       --state) state="$2"; shift 2 ;;
       --questions) questions="$2"; shift 2 ;;
       --answers) answers="$2"; shift 2 ;;
+      --skill-prompt) skill_prompt_override="$2"; shift 2 ;;
       *) echo "build_prompt: unknown arg $1" >&2; exit 2 ;;
     esac
   done
 
-  local skill_prompt="$root/scripts/ralph/prompt.md"
+  # Prompt file: explicit override > ralph/PROMPT_build.md > legacy prompt.md
+  local skill_prompt
+  if [[ -n "$skill_prompt_override" && -f "$skill_prompt_override" ]]; then
+    skill_prompt="$skill_prompt_override"
+  elif [[ -f "$root/ralph/PROMPT_build.md" ]]; then
+    skill_prompt="$root/ralph/PROMPT_build.md"
+  else
+    skill_prompt="$root/scripts/ralph/prompt.md"  # legacy fallback
+  fi
+
+  # AGENTS.md: inject if present
+  local agents_md=""
+  if [[ -f "$root/ralph/AGENTS.md" ]]; then
+    agents_md="$(cat "$root/ralph/AGENTS.md")"
+  fi
 
   local user_base="$HOME/.claude/CLAUDE.md"
   local overlay=""
@@ -1023,6 +1230,9 @@ Repo root: $root
 Working directory: $workdir
 
 $(cat "$skill_prompt")
+
+# AGENTS.md (operational guide)
+$agents_md
 
 # PRD.md (relevant section)
 $(sed -n "/^### \\[ \\] $task\\b/,/^### \\[/p" "$prd" | head -n 220)
