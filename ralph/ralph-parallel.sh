@@ -10,7 +10,7 @@ source "$ROOT_DIR/ralph/lib.sh"
 load_project_config "$ROOT_DIR"
 
 # PRD source: from ralph.yaml or default
-PRD_SOURCE="$ROOT_DIR/${RALPH_PRD:-PRD_PROJECT.md}"
+PRD_SOURCE="$ROOT_DIR/${RALPH_PRD:-PRD.md}"
 
 SKIP_W00=0
 DRY_RUN=0
@@ -31,13 +31,9 @@ Usage: ralph/ralph-parallel.sh [options]
   -h|--help
 
 Flow:
-  Phase 1 — W00-001 + W00-002 sequential (project scan + placement plan)
-  Phase 2 — 4 agents in parallel:
-              W02-A: W02-001 (Factory)
-              W02-B: W02-002 + W02-003 (Singleton 1 + 2)
-              W02-C: W02-004 (Builder)
-              W02-D: W02-005 (Prototype)
-  Phase 3 — test gate: ./gradlew test per worktree
+  Phase 1 — W00-001 sequential (optional baseline scan, --skip-w00 to skip)
+  Phase 2 — agents in parallel (from ralph/ralph.yaml parallel.agents table)
+  Phase 3 — test gate: RALPH_TEST_CMD per worktree
   Phase 4 — merge report
 EOF
 }
