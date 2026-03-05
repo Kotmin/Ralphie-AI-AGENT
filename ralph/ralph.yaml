@@ -1,0 +1,25 @@
+project: <your-project>
+prd: PRD.md
+merge_into: main
+
+runner:
+  # Set your project's test/build/dev commands here.
+  # Leave empty to rely on auto-detection in lib.sh.
+  test: ""
+  build: ""
+  dev: ""
+
+# known_test_failures:
+#   - "SomeFlakyTest"   # pre-existing failures to ignore
+
+parallel:
+  # Define agents for ralph-parallel.sh here.
+  # Each agent runs ralph.sh with the given task and batch size.
+  agents: []
+  # agents:
+  #   - label: A
+  #     task: US-001
+  #     batch: 1
+  #   - label: B
+  #     task: US-003
+  #     batch: 2
