@@ -21,7 +21,7 @@ usage() {
 Usage: ralph/ralph.sh [options]
 
 Core options:
-  --iterations N         default 10 (max Claude invocations for this run)
+  --iterations N         default 3 (max Claude invocations for this run)
   --batch-size N         default 5 (how many unchecked tasks to plan for this run)
   --task-id US-XXX       force a specific starting task (still plans a batch from there if possible)
   --force-new-task       ignore stored current_task_id
@@ -61,7 +61,7 @@ Notes:
 EOF
 }
 
-ITERATIONS=10
+ITERATIONS=3
 BATCH_SIZE=5
 TASK_ID=""
 FORCE_NEW_TASK=0
