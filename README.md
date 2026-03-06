@@ -17,7 +17,7 @@ that prioritizes **clean context**, **repeatability**, and **git safety**.
 **Tracked (committed):**
 - `scripts/ralph/` — runner logic (`ralph.sh`, `lib.sh`, `prompt.md`)
 - `CLAUDE.md` — project instructions for Claude
-- `PRD.md` — global task definitions
+- `.ralph/tracking/PRD.md` — global task definitions
 
 **Local only (gitignored):**
 - `.ralph/tracking/` — PRD, state, progress, questions
