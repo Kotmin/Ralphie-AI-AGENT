@@ -1,5 +1,5 @@
 ---
-name: install
+name: install-ralph
 description: Use when the user wants to install Ralph into another project, copy ralph to a new repo, set up ralph in a project, or add the ralph tool to an existing codebase. Examples: "install ralph into /path/to/project", "add ralph to my project", "set up ralph in ~/dev/myapp".
 version: 1.0.0
 ---
