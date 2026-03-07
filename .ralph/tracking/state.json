@@ -1,0 +1,18 @@
+{
+  "branch": "ralph/US-001-US-005",
+  "completed_tasks": [],
+  "current_task_id": "US-001",
+  "iteration": 10,
+  "last_event": "Iterations exhausted or stopped",
+  "planned_tasks": [
+    "US-001",
+    "US-002",
+    "US-003",
+    "US-004",
+    "US-005"
+  ],
+  "questions": [],
+  "run_id": "20260305-164331",
+  "status": "STOPPED",
+  "worktree_path": "/home/kotmin/Coding/Ralphie-AI-AGENT/.ralph/worktrees/ralph/US-001-US-005"
+}
