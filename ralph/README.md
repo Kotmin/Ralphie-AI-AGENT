@@ -20,32 +20,17 @@ not just when you have the ralph repo open.
 ```bash
 RALPH_REPO="$HOME/ralphie-ai-agent"   # adjust if you cloned elsewhere
 
-# Claude Code only loads plugins from registered marketplaces.
-# The registered location is claude-plugins-official — put ralph there.
-PLUGIN_DIR="$HOME/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph"
+mkdir -p ~/.claude/skills/install-ralph
 
-mkdir -p "$PLUGIN_DIR/.claude-plugin"
-mkdir -p "$PLUGIN_DIR/skills/install"
+cp "$RALPH_REPO/ralph/skills/install/SKILL.md" ~/.claude/skills/install-ralph/SKILL.md
 
-cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<'EOF'
-{
-  "name": "ralph",
-  "description": "Install Ralph autonomous loop runner into any project",
-  "author": { "name": "you" }
-}
-EOF
-
-cp "$RALPH_REPO/ralph/skills/install/SKILL.md" "$PLUGIN_DIR/skills/install/SKILL.md"
-
-# Patch the placeholder with the absolute path to install.sh (one-time)
+# Replace the placeholder with the absolute path to install.sh (one-time)
 sed -i "s|RALPH_INSTALL_SCRIPT|$RALPH_REPO/ralph/skills/install/install.sh|g" \
-   "$PLUGIN_DIR/skills/install/SKILL.md"
+   ~/.claude/skills/install-ralph/SKILL.md
 ```
 
-> The `install.sh` script auto-detects its own location, so you never need to edit the
-> script itself — only the path in the skill's instruction file needs to be absolute.
-> Marketplace updates sync tracked plugin names from GitHub; your added `ralph/` folder
-> will survive them.
+> `install.sh` auto-detects its own location — no edits needed inside the script.
+> Only the copied SKILL.md needs the absolute path so Claude can find it from any project.
 
 ### Step 3 — Install Ralph into your project
 
