@@ -42,6 +42,50 @@ Ralph installed. Next steps:
   5. Run the build:  ralph/ralph.sh --iterations 3
 ```
 
+## Global Setup (use from any project)
+
+By default this skill only works when Claude Code is open in the ralph source repo.
+To trigger it from **any** Claude Code session on this machine:
+
+### 1. Create the plugin folder
+
+```bash
+mkdir -p ~/.claude/plugins/marketplaces/local/plugins/ralph/.claude-plugin
+mkdir -p ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install
+```
+
+### 2. Create `plugin.json`
+
+```bash
+cat > ~/.claude/plugins/marketplaces/local/plugins/ralph/.claude-plugin/plugin.json <<'EOF'
+{
+  "name": "ralph",
+  "description": "Install Ralph autonomous loop runner into any project",
+  "author": { "name": "you" }
+}
+EOF
+```
+
+### 3. Copy and patch this SKILL.md
+
+```bash
+RALPH_REPO="/absolute/path/to/ralphie-ai-agent"   # <-- update this
+
+cp "$RALPH_REPO/ralph/skills/install/SKILL.md" \
+   ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install/SKILL.md
+
+# Replace the relative script path with the absolute path
+sed -i "s|ralph/skills/install/install.sh|$RALPH_REPO/ralph/skills/install/install.sh|g" \
+   ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install/SKILL.md
+```
+
+After this, say **"install ralph into /path/to/my-project"** from any Claude Code session
+and the skill will run `install.sh` using the correct absolute path.
+
+> **Why the path edit?** `install.sh` auto-detects its own location via `BASH_SOURCE[0]`
+> (no changes needed inside the script), but the SKILL.md must tell Claude where to find
+> the script — and that path differs per machine.
+
 ## Key Rules
 
 - Never overwrite `ralph/ralph.yaml` if it already exists in the target project
