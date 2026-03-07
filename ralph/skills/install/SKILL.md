@@ -25,7 +25,7 @@ If `[target-path]` is not provided, ask the user for it before proceeding.
 
 ### 1. Validate target
 
-Run `ralph/skills/install/install.sh <target-path>` from the ralph source repo root.
+Run `RALPH_INSTALL_SCRIPT <target-path>`.
 
 The script handles all validation and copying.
 
@@ -47,17 +47,22 @@ Ralph installed. Next steps:
 By default this skill only works when Claude Code is open in the ralph source repo.
 To trigger it from **any** Claude Code session on this machine:
 
+Claude Code only loads plugins from registered marketplaces. The registered location is
+`~/.claude/plugins/marketplaces/claude-plugins-official/plugins/`. Add ralph there:
+
 ### 1. Create the plugin folder
 
 ```bash
-mkdir -p ~/.claude/plugins/marketplaces/local/plugins/ralph/.claude-plugin
-mkdir -p ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install
+RALPH_REPO="/absolute/path/to/ralphie-ai-agent"   # <-- update this once
+
+mkdir -p ~/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph/.claude-plugin
+mkdir -p ~/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph/skills/install
 ```
 
 ### 2. Create `plugin.json`
 
 ```bash
-cat > ~/.claude/plugins/marketplaces/local/plugins/ralph/.claude-plugin/plugin.json <<'EOF'
+cat > ~/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph/.claude-plugin/plugin.json <<'EOF'
 {
   "name": "ralph",
   "description": "Install Ralph autonomous loop runner into any project",
@@ -69,19 +74,22 @@ EOF
 ### 3. Copy and patch this SKILL.md
 
 ```bash
-RALPH_REPO="/absolute/path/to/ralphie-ai-agent"   # <-- update this
-
 cp "$RALPH_REPO/ralph/skills/install/SKILL.md" \
-   ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install/SKILL.md
+   ~/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph/skills/install/SKILL.md
 
-# Replace the relative script path with the absolute path
-sed -i "s|ralph/skills/install/install.sh|$RALPH_REPO/ralph/skills/install/install.sh|g" \
-   ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install/SKILL.md
+# Replace the placeholder with the absolute path to install.sh (one-time)
+sed -i "s|RALPH_INSTALL_SCRIPT|$RALPH_REPO/ralph/skills/install/install.sh|g" \
+   ~/.claude/plugins/marketplaces/claude-plugins-official/plugins/ralph/skills/install/SKILL.md
 ```
 
 After this, say **"install ralph into /path/to/my-project"** from any Claude Code session
 and the skill will run `install.sh` using the correct absolute path.
 
+> **Why `claude-plugins-official`?** Claude Code only reads plugins from marketplaces
+> registered in `~/.claude/plugins/known_marketplaces.json`. Only `claude-plugins-official`
+> is registered by default. Marketplace updates sync from GitHub and only touch tracked
+> plugin names — a user-added `ralph/` folder will survive updates.
+>
 > **Why the path edit?** `install.sh` auto-detects its own location via `BASH_SOURCE[0]`
 > (no changes needed inside the script), but the SKILL.md must tell Claude where to find
 > the script — and that path differs per machine.
