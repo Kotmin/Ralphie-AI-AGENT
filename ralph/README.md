@@ -4,35 +4,96 @@ Minimal, production-oriented automation loop for Claude Code. Each iteration run
 in a fresh headless process with no chat history. Persistent state lives in tracking files;
 work happens in git worktrees.
 
-## Install
+## End-to-End: First Project
+
+### Step 1 — Get Ralph (one-time)
 
 ```bash
-# Guided install via Claude skill (recommended)
-# Say: "install ralph into /path/to/project" while in Claude Code
-
-# Or manual:
-cp -r ralph/ /path/to/new-project/ralph/
-# Edit ralph/ralph.yaml for the new project
-# Edit ralph/AGENTS.md with project-specific context
+git clone https://github.com/your-org/ralphie-ai-agent ~/ralphie-ai-agent
 ```
 
-## First Run Walkthrough
+### Step 2 — Make the install skill globally available (one-time)
+
+This lets you say **"install ralph into /path/to/project"** from any Claude Code session,
+not just when you have the ralph repo open.
 
 ```bash
-# 1. Edit ralph/ralph.yaml — set project name, prd filename, test command
-# 2. Write your PRD (or copy the template):
+RALPH_REPO="$HOME/ralphie-ai-agent"   # adjust if you cloned elsewhere
+
+mkdir -p ~/.claude/plugins/marketplaces/local/plugins/ralph/.claude-plugin
+mkdir -p ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install
+
+cat > ~/.claude/plugins/marketplaces/local/plugins/ralph/.claude-plugin/plugin.json <<'EOF'
+{
+  "name": "ralph",
+  "description": "Install Ralph autonomous loop runner into any project",
+  "author": { "name": "you" }
+}
+EOF
+
+cp "$RALPH_REPO/ralph/skills/install/SKILL.md" \
+   ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install/SKILL.md
+
+# Patch the skill with the absolute script path (no manual edits needed after this)
+sed -i "s|ralph/skills/install/install.sh|$RALPH_REPO/ralph/skills/install/install.sh|g" \
+   ~/.claude/plugins/marketplaces/local/plugins/ralph/skills/install/SKILL.md
+```
+
+> The `install.sh` script auto-detects its own location, so you never need to edit the
+> script itself — only the path in the skill's instruction file.
+
+### Step 3 — Install Ralph into your project
+
+Open Claude Code in **any** project, then say:
+
+```
+install ralph into /absolute/path/to/my-project
+```
+
+Claude runs `install.sh`, copies the `ralph/` directory, and prints next steps.
+
+### Step 4 — Configure
+
+```bash
+# Required: set project name, prd filename, test command
+$EDITOR my-project/ralph/ralph.yaml
+
+# Required: describe your stack and build commands for agents
+$EDITOR my-project/ralph/AGENTS.md
+```
+
+### Step 5 — Write a PRD
+
+```bash
+# Option A: scaffold interactively via Claude Code skill
+# Say: "create a prd" in Claude Code
+
+# Option B: copy the template
 cp ralph/templates/PRD_template.md PRD.md
-# Edit PRD.md — fill in your tasks
+$EDITOR PRD.md
+```
 
-# 3. Generate an implementation plan (optional, recommended):
+### Step 6 — Run
+
+```bash
+cd my-project
+
+# Optional: generate an implementation plan first
 ralph/ralph.sh --mode plan
-# Review IMPLEMENTATION_PLAN.md at project root before proceeding
+# Review IMPLEMENTATION_PLAN.md before proceeding
 
-# 4. Run the build loop:
+# Run the build loop
 ralph/ralph.sh --iterations 3
 
-# 5. Check results:
+# Check results
 cat .ralph/tracking/progress.txt
+```
+
+## Install (manual alternative)
+
+```bash
+cp -r ralph/ /path/to/new-project/ralph/
+# Edit ralph/ralph.yaml and ralph/AGENTS.md
 ```
 
 ## Project Setup
@@ -71,7 +132,7 @@ Running `ralph/ralph.sh --mode plan` reads your source PRD and writes
 (what is already implemented vs what is missing) but never writes any code.
 Review the plan before starting a build run.
 
-## Quick Start
+## Common Commands
 
 ```bash
 # Sequential loop (build mode, reads from ralph.yaml)
