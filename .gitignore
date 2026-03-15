@@ -1,0 +1,22 @@
+# Ralph runtime state — machine-specific, must not be committed
+.ralph/tracking/state.json
+.ralph/tracking/progress.txt
+.ralph/tracking/questions.md
+.ralph/tracking/answers.md
+.ralph/worktrees.json
+.ralph/worktrees/
+.ralph/logs/
+
+# Per-machine Claude Code permissions
+.claude/settings.local.json
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
