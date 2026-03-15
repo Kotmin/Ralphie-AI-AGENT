@@ -139,6 +139,22 @@ STATE_JSON="$TRACK_DIR/state.json"
 PRD_MD="$TRACK_DIR/PRD.md"
 PROGRESS_TXT="$TRACK_DIR/progress.txt"
 
+# Graceful shutdown: mark state STOPPED and clean up temp files on signal or exit
+PROMPT_FILE=""
+_ralph_cleanup() {
+  local sig="${1:-EXIT}"
+  rm -f "$PROMPT_FILE"
+  # Only update state if the file exists (bootstrap may not have run yet)
+  if [[ -f "$STATE_JSON" ]]; then
+    state_set "$STATE_JSON" ".status" '"STOPPED"' 2>/dev/null || true
+    state_set "$STATE_JSON" ".last_event" '"Interrupted by signal"' 2>/dev/null || true
+    append_progress "$PROGRESS_TXT" "STOP: STOPPED run_id=${RUN_ID:-unknown} reason=\"signal $sig\" @ $(now_iso)" 2>/dev/null || true
+  fi
+}
+trap '_ralph_cleanup INT'  INT
+trap '_ralph_cleanup TERM' TERM
+trap 'rm -f "$PROMPT_FILE"' EXIT
+
 # US-012: Detect invoked branch if not specified
 if [[ -z "$INVOKED_BRANCH" ]]; then
   INVOKED_BRANCH="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
@@ -362,7 +378,6 @@ for ((i=1; i<=ITERATIONS; i++)); do
   sync_tracking_to_worktree "$TRACK_DIR" "$WORKDIR/.ralph_tracking"
 
   PROMPT_FILE="$(mktemp)"
-  trap 'rm -f "$PROMPT_FILE"' EXIT
 
   build_prompt \
     --out "$PROMPT_FILE" \
