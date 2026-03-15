@@ -661,13 +661,19 @@ run_claude_headless_logged() {
 sync_tracking_to_worktree() {
   local src="$1" dst="$2"
   mkdir -p "$dst"
-  rsync -a --delete "$src/" "$dst/"
+  if ! rsync -a --delete "$src/" "$dst/"; then
+    log "ERROR: rsync failed syncing tracking to worktree ($src -> $dst)" >&2
+    return 1
+  fi
 }
 
 sync_tracking_from_worktree() {
   local src="$1" dst="$2"
   mkdir -p "$dst"
-  rsync -a --delete "$src/" "$dst/"
+  if ! rsync -a --delete "$src/" "$dst/"; then
+    log "ERROR: rsync failed syncing tracking from worktree ($src -> $dst)" >&2
+    return 1
+  fi
 }
 
 log_contains_quota_limit() {
