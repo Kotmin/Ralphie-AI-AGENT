@@ -337,7 +337,7 @@ PY
 
 state_set() {
   local state="$1" keyexpr="$2" value="$3"
-  python3 - "$state" "$keyexpr" "$value" <<'PY'
+  flock -x "${state}.lock" python3 - "$state" "$keyexpr" "$value" <<'PY'
 import json, sys
 p, keyexpr, value = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.load(open(p, "r", encoding="utf-8"))
@@ -355,7 +355,7 @@ PY
 # Set a JSON array from bash args
 state_set_json_array() {
   local state="$1" keyexpr="$2"; shift 2
-  python3 - "$state" "$keyexpr" "$@" <<'PY'
+  flock -x "${state}.lock" python3 - "$state" "$keyexpr" "$@" <<'PY'
 import json, sys
 p, keyexpr, *items = sys.argv[1:]
 data = json.load(open(p, "r", encoding="utf-8"))
@@ -368,7 +368,7 @@ PY
 
 append_completed_task() {
   local state="$1" task="$2"
-  python3 - "$state" "$task" <<'PY'
+  flock -x "${state}.lock" python3 - "$state" "$task" <<'PY'
 import json, sys
 p, task = sys.argv[1], sys.argv[2]
 data = json.load(open(p, "r", encoding="utf-8"))
@@ -896,7 +896,7 @@ register_worktree() {
   local timestamp
   timestamp="$(now_iso)"
 
-  python3 - "$manifest" "$wt_path" "$run_id" "$branch" "$timestamp" <<'PY'
+  flock -x "${manifest}.lock" python3 - "$manifest" "$wt_path" "$run_id" "$branch" "$timestamp" <<'PY'
 import json, sys, os
 manifest_path, wt_path, run_id, branch, timestamp = sys.argv[1:6]
 
@@ -908,14 +908,16 @@ if os.path.exists(manifest_path):
     except:
         pass
 
-# Add new worktree entry
-data["worktrees"].append({
-    "path": wt_path,
-    "run_id": run_id,
-    "branch": branch,
-    "created": timestamp,
-    "owner": "ralph"
-})
+# Add new entry only if not already present (deduplicate by path+run_id)
+existing = {(w.get("path"), w.get("run_id")) for w in data.get("worktrees", [])}
+if (wt_path, run_id) not in existing:
+    data.setdefault("worktrees", []).append({
+        "path": wt_path,
+        "run_id": run_id,
+        "branch": branch,
+        "created": timestamp,
+        "owner": "ralph"
+    })
 
 with open(manifest_path, "w") as f:
     json.dump(data, f, indent=2)
@@ -931,7 +933,7 @@ unregister_worktree() {
   local manifest="$root/$WORKTREE_MANIFEST"
   [[ -f "$manifest" ]] || return 0
 
-  python3 - "$manifest" "$wt_path" <<'PY'
+  flock -x "${manifest}.lock" python3 - "$manifest" "$wt_path" <<'PY'
 import json, sys, os
 manifest_path, wt_path = sys.argv[1:3]
 

@@ -1,8 +1,10 @@
 # Ralph runtime state — machine-specific, must not be committed
+.ralph/tracking/state.json.lock
 .ralph/tracking/state.json
 .ralph/tracking/progress.txt
 .ralph/tracking/questions.md
 .ralph/tracking/answers.md
+.ralph/worktrees.json.lock
 .ralph/worktrees.json
 .ralph/worktrees/
 .ralph/logs/
