@@ -42,7 +42,7 @@ LOG_DIR="$ROOT_DIR/.ralph/logs/think"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/think-$(run_id_now).log"
 
-PROMPT_FILE="$(mktemp /tmp/ralph-think-XXXXXX.md)"
+PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/ralph-think-XXXXXX.md")"
 trap 'rm -f "$PROMPT_FILE"' EXIT
 
 cat > "$PROMPT_FILE" <<'PROMPT'
